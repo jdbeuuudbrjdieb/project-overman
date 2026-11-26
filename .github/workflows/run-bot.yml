@@ -5,6 +5,8 @@ on:
   schedule:
     - cron: "0 */6 * * *"
 
+# 🛡️ این بخش کلید حل مشکل است:
+# اگر اجرای قبلی هنوز در حال دویدن باشد، آن را می‌کشد و اجرای جدید را روشن می‌کند
 concurrency:
   group: overman-bot
   cancel-in-progress: true
