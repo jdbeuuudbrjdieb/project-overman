@@ -1,8 +1,7 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# 🌟 PROJECT OVERMAN - OMNI-COMMUNICATION EDITION v4.0
+# 🌟 PROJECT OVERMAN - OMNI-SECURITY & COMMUNICATION OS v5.0
 # ══════════════════════════════════════════════════════════════════════════════
-# قابلیت‌ها: ساعت کابل + آنلاین + تایپ + منشی دری هوشمند + حالت غیبت
-# تنظیم متن منشی + زمان‌بند + ری‌اکشن + پنل کنترل از راه دور
+# تمامی دستورات به زبان دری (فارسی افغانی) - ۲۴/۷ پایدار - هوش مصنوعی دری
 # ══════════════════════════════════════════════════════════════════════════════
 
 import os
@@ -24,7 +23,7 @@ from telethon.tl.functions.channels import EditBannedRequest
 from telethon.errors import FloodWaitError, ChatAdminRequiredError, RPCError
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۱. تنظیمات اولیه
+# ۱. تنظیمات اولیه و لاگ
 # ══════════════════════════════════════════════════════════════════════════════
 logging.basicConfig(format="%(asctime)s | %(levelname)-8s | %(message)s", level=logging.INFO)
 logger = logging.getLogger("OvermanOmni")
@@ -42,16 +41,18 @@ KABUL_TZ = ZoneInfo("Asia/Kabul")
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۲. حافظه‌ها و تنظیمات منشی
+# ۲. حافظه‌ها و تنظیمات سراسری
 # ══════════════════════════════════════════════════════════════════════════════
-recent_ai_replies = {}
-user_warns = {}
-message_cache = {}
-ai_history = {}
+recent_ai_replies = {}       # جلوگیری از اسپم منشی
+user_warns = {}              # سیستم اخطار: { (chat_id, user_id): count }
+message_cache = {}           # ضد حذف: { (chat_id, msg_id): (sender_id, text) }
+ai_history = {}              # حافظه هوش مصنوعی
 
-# تنظیمات منشی
+# تنظیمات منشی و گروه
 away_mode = False
-secretary_custom_text = ""  # اگر خالی باشد از هوش مصنوعی استفاده می‌کند
+secretary_custom_text = ""
+group_locks = {}             # قفل گروه‌ها: { chat_id: {"link": True, "badword": True} }
+bad_words = ["فحش", "بی‌ادب", "کلمه_ممنوعه"] # کلمات ممنوعه را اینجا اضافه کنید
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ۳. توابع کمکی
@@ -66,15 +67,23 @@ def parse_time(time_str):
     if unit == 'd': return val * 86400
     return None
 
+async def translate_text(text, target="fa"):
+    try:
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={target}&dt=t&q={requests.utils.quote(text)}"
+        loop = asyncio.get_event_loop()
+        res = await loop.run_in_executor(None, lambda: requests.get(url, timeout=10))
+        if res.status_code == 200:
+            return "".join([part[0] for part in res.json()[0]])
+    except: pass
+    return "❌ خطا در ترجمه."
+
 # ══════════════════════════════════════════════════════════════════════════════
-# ۴. موتور هوش مصنوعی دری (Dari AI)
+# ۴. هوش مصنوعی دری (Dari AI Secretary)
 # ══════════════════════════════════════════════════════════════════════════════
 async def ai_reply_dari(user_msg, sender_name, user_id):
-    if secretary_custom_text:
-        return secretary_custom_text
+    if secretary_custom_text: return secretary_custom_text
         
     url = "https://text.pollinations.ai/openai"
-    
     if user_id not in ai_history: ai_history[user_id] = []
     ai_history[user_id].append({"role": "user", "content": user_msg})
     if len(ai_history[user_id]) > 4: ai_history[user_id].pop(0)
@@ -87,10 +96,7 @@ async def ai_reply_dari(user_msg, sender_name, user_id):
         f"Keep it very short (max 2 sentences)."
     )
     
-    payload = {
-        "model": "openai",
-        "messages": [{"role": "system", "content": sys_prompt}] + ai_history[user_id]
-    }
+    payload = {"model": "openai", "messages": [{"role": "system", "content": sys_prompt}] + ai_history[user_id]}
     try:
         loop = asyncio.get_event_loop()
         res = await loop.run_in_executor(None, lambda: requests.post(url, json=payload, timeout=15))
@@ -98,19 +104,8 @@ async def ai_reply_dari(user_msg, sender_name, user_id):
             reply = res.json()["choices"][0]["message"]["content"]
             ai_history[user_id].append({"role": "assistant", "content": reply})
             return reply
-    except Exception as e:
-        logger.error(f"AI Error: {e}")
+    except Exception as e: logger.error(f"AI Error: {e}")
     return f"سلام {sender_name} جان، {BASE_NAME} الان دسترسی ندارد. به زودی جواب می‌دهد."
-
-async def translate_text(text, target="fa"):
-    try:
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={target}&dt=t&q={requests.utils.quote(text)}"
-        loop = asyncio.get_event_loop()
-        res = await loop.run_in_executor(None, lambda: requests.get(url, timeout=10))
-        if res.status_code == 200:
-            return "".join([part[0] for part in res.json()[0]])
-    except: pass
-    return "❌ خطا در ترجمه."
 
 # ══════════════════════════════════════════════════════════════════════════════
 # ۵. منشی هوشمند دری + حالت غیبت + خواندن خودکار
@@ -119,34 +114,30 @@ async def translate_text(text, target="fa"):
 async def secretary(event):
     global away_mode
     try:
-        # خواندن خودکار پیام (سین زدن)
-        await client.send_read_acknowledge(event.chat_id)
-        
+        await client.send_read_acknowledge(event.chat_id) # خواندن خودکار (سین زدن)
         if not away_mode: return
         
         sender = await event.get_sender()
-        me = await client.get_me()
-        if sender.bot or sender.id == me.id: return
+        if sender.bot or sender.id == (await client.get_me()).id: return
         
         now = time.time()
         if sender.id in recent_ai_replies and now - recent_ai_replies[sender.id] < 300: return
         
-        reply = await ai_reply_dari(event.raw_text or "[Media]", sender.first_name, sender.id)
+        reply = await ai_reply_dari(event.raw_text or "[رسانه]", sender.first_name, sender.id)
         await event.reply(reply)
         recent_ai_replies[sender.id] = now
         logger.info(f"🤖 منشی دری پاسخ داد به {sender.first_name}")
-    except Exception as e:
-        logger.error(f"Secretary Error: {e}")
+    except Exception as e: logger.error(f"Secretary Error: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۶. صندوق امانات و ضد حذف
+# ۶. صندوق امانات و ضد حذف پیشرفته
 # ══════════════════════════════════════════════════════════════════════════════
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def vault(event):
     try:
         sender = await event.get_sender()
         if sender.id == (await client.get_me()).id: return
-        text = event.raw_text or "[رسانه]"
+        text = event.raw_text or "📷 [رسانه/عکس/ویدیو]"
         ts = datetime.now(KABUL_TZ).strftime("%Y-%m-%d %H:%M")
         await client.send_message("me", f"📩 **صندوق امانات**\n👤 از: {sender.first_name} (`{sender.id}`)\n⏰ {ts}\n\n{text}")
     except: pass
@@ -170,62 +161,145 @@ async def anti_delete(event):
     except: pass
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۷. مدیریت گروه و ری‌اکشن خودکار
+# ۷. سیستم قفل هوشمند گروه (پاکسازی خودکار لینک و کلمات)
 # ══════════════════════════════════════════════════════════════════════════════
-@client.on(events.NewMessage(outgoing=True, pattern=r"^(بن|سکوت|آزاد|اخطار|حذف|پاکسازی|#react|#info|#pin|#unpin|#ترجمه)$"))
-async def moderator(event):
-    cmd = event.pattern_match.group(1)
+@client.on(events.NewMessage(incoming=True, func=lambda e: e.is_group))
+async def group_locks(event):
+    if not event.is_group: return
+    chat_id = event.chat_id
+    locks = group_locks.get(chat_id, {})
+    if not locks: return
+    
     try:
-        if cmd == "پاکسازی" and event.is_group:
+        # قفل لینک
+        if locks.get("link") and event.raw_text:
+            if re.search(r"(https?://|t\.me/|@[a-zA-Z0-9_]+)", event.raw_text):
+                await event.delete()
+                return
+        # قفل کلمات
+        if locks.get("badword") and event.raw_text:
+            for word in bad_words:
+                if word in event.raw_text:
+                    await event.delete()
+                    return
+    except: pass
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ۸. دستورات مدیریتی و روتور اصلی (تمام دری)
+# ══════════════════════════════════════════════════════════════════════════════
+@client.on(events.NewMessage(outgoing=True))
+async def command_router(event):
+    text = event.raw_text.strip()
+    if not text: return
+    
+    try:
+        # ---------- دستورات پنل (فقط در Saved Messages) ----------
+        me = await client.get_me()
+        if event.chat_id == me.id:
+            global away_mode, secretary_custom_text, group_locks
+            
+            if text == "منشی روشن":
+                away_mode = True
+                return await event.edit("🟢 منشی روشن شد. (حالت غیبت فعال است)")
+            elif text == "منشی خاموش":
+                away_mode = False
+                return await event.edit("🔴 منشی خاموش شد.")
+            elif text.startswith("تنظیم منشی "):
+                secretary_custom_text = text.replace("تنظیم منشی ", "").strip()
+                return await event.edit(f"✅ متن منشی تنظیم شد:\n{secretary_custom_text}")
+            elif text == "حذف منشی":
+                secretary_custom_text = ""
+                return await event.edit("✅ متن منشی پاک شد. (استفاده از هوش مصنوعی)")
+            elif text == "وضعیت":
+                return await event.edit(f"👑 **وضعیت ربات**\n\nمنشی: {'🟢 روشن' if away_mode else '🔴 خاموش'}\nمتن منشی: {secretary_custom_text[:20] or 'هوش مصنوعی'}\nپیام‌های کش‌شده: {len(message_cache)}")
+            elif text.startswith("ارسال خودکار "):
+                # فرمت: ارسال خودکار 10m | @user | متن
+                parts = text.replace("ارسال خودکار ", "").split("|")
+                if len(parts) == 3:
+                    delay_str, target, msg = parts[0].strip(), parts[1].strip(), parts[2].strip()
+                    seconds = parse_time(delay_str)
+                    if seconds:
+                        await event.edit(f"⏰ پیام برای {delay_str} دیگر به {target} زمان‌بندی شد.")
+                        async def delayed_send():
+                            await asyncio.sleep(seconds)
+                            await client.send_message(target, msg)
+                        asyncio.create_task(delayed_send())
+                    else: await event.edit("❌ فرمت زمان اشتباه است (مثلاً 10m).")
+                return
+
+        # ---------- دستورات عمومی (در گروه‌ها و چت‌ها) ----------
+        reply = await event.get_reply_message()
+        
+        if text == "ترجمه" and reply:
+            await event.edit("⏳ در حال ترجمه...")
+            translated = await translate_text(reply.raw_text or "")
+            return await event.edit(f"🌐 **ترجمه:**\n{translated}")
+            
+        if text == "ری‌اکشن" and reply:
+            await client(SendReactionRequest(peer=event.chat_id, msg_id=reply.id, reaction=[ReactionEmoji(emoticon="❤️")]))
+            return await event.delete()
+            
+        if text == "مشخصات" and reply:
+            target = await reply.get_sender()
+            return await event.edit(f"👤 نام: {target.first_name}\n🆔 آیدی: `{target.id}`\n🔗 یوزرنیم: @{target.username or 'ندارد'}")
+
+        if text == "پین" and reply:
+            await client.pin_message(event.chat_id, reply.id)
+            return await event.edit("📌 پیام پین شد.")
+        if text == "آنپین" and reply:
+            await client.unpin_message(event.chat_id, reply.id)
+            return await event.edit("📌 پیام آنپین شد.")
+            
+        if text == "تاس":
+            return await event.edit(f"🎲 {random.randint(1,6)}")
+        if text == "سکه":
+            return await event.edit(f"🪙 {'شیر' if random.choice([True, False]) else 'خط'}")
+
+        # ---------- دستورات گروهی (نیاز به ادمین و ریپلای) ----------
+        if not event.is_group: return
+        
+        # قفل‌ها
+        if text == "قفل لینک":
+            group_locks.setdefault(event.chat_id, {})["link"] = True
+            return await event.edit("🔗 قفل لینک فعال شد.")
+        if text == "باز کردن لینک":
+            group_locks.setdefault(event.chat_id, {})["link"] = False
+            return await event.edit("🔗 قفل لینک غیرفعال شد.")
+        if text == "قفل کلمات":
+            group_locks.setdefault(event.chat_id, {})["badword"] = True
+            return await event.edit("🚫 قفل کلمات ممنوعه فعال شد.")
+        if text == "باز کردن کلمات":
+            group_locks.setdefault(event.chat_id, {})["badword"] = False
+            return await event.edit("🚫 قفل کلمات غیرفعال شد.")
+            
+        # پاکسازی
+        if text == "پاکسازی":
             count = 0
             async for msg in client.iter_messages(event.chat_id, limit=50):
                 if msg.id == event.id: break
                 try: await msg.delete(); count += 1
                 except: pass
             return await event.edit(f"🧹 {count} پیام پاک شد.")
-            
-        if cmd == "#ترجمه" and event.is_reply:
-            reply = await event.get_reply_message()
-            if reply.raw_text:
-                await event.edit("⏳ در حال ترجمه...")
-                await event.edit(f"🌐 **ترجمه:**\n{await translate_text(reply.raw_text)}")
-            return
 
-        reply = await event.get_reply_message()
-        if not reply: return await event.edit("❌ روی یک پیام ریپلای کنید.")
-
-        if cmd == "#react":
-            await client(SendReactionRequest(peer=event.chat_id, msg_id=reply.id, reaction=[ReactionEmoji(emoticon="❤️")]))
-            await event.delete()
-            return
-        elif cmd == "#info":
-            target = await reply.get_sender()
-            await event.edit(f"👤 نام: {target.first_name}\n🆔 آیدی: `{target.id}`\n🔗 یوزرنیم: @{target.username or 'ندارد'}")
-            return
-        elif cmd == "#pin":
-            await client.pin_message(event.chat_id, reply.id)
-            await event.edit("📌 پیام پین شد.")
-            return
-        elif cmd == "#unpin":
-            await client.unpin_message(event.chat_id, reply.id)
-            await event.edit("📌 پیام آنپین شد.")
-            return
-
-        if not event.is_group: return
+        if not reply: return await event.edit("❌ روی پیام کاربر ریپلای کنید.")
         target = await reply.get_sender()
         
-        if cmd == "بن":
+        if text == "بن":
             await client(EditBannedRequest(event.chat_id, target.id, ChatBannedRights(until_date=None, view_messages=True)))
             await event.edit(f"⛔️ {target.first_name} بن شد.")
-        elif cmd == "سکوت":
+        elif text == "اخراج":
+            await client(EditBannedRequest(event.chat_id, target.id, ChatBannedRights(until_date=None, view_messages=True)))
+            await client(EditBannedRequest(event.chat_id, target.id, ChatBannedRights(until_date=None)))
+            await event.edit(f"👢 {target.first_name} اخراج شد.")
+        elif text == "سکوت":
             await client(EditBannedRequest(event.chat_id, target.id, ChatBannedRights(until_date=None, send_messages=True)))
             await event.edit(f"🔇 {target.first_name} سکوت شد.")
-        elif cmd == "آزاد":
+        elif text == "آزاد":
             await client(EditBannedRequest(event.chat_id, target.id, ChatBannedRights(until_date=None)))
             await event.edit(f"🔊 {target.first_name} آزاد شد.")
-        elif cmd == "حذف":
+        elif text == "حذف":
             await reply.delete(); await event.delete()
-        elif cmd == "اخطار":
+        elif text == "اخطار":
             key = (event.chat_id, target.id)
             user_warns[key] = user_warns.get(key, 0) + 1
             if user_warns[key] >= 3:
@@ -234,59 +308,14 @@ async def moderator(event):
                 del user_warns[key]
             else:
                 await event.edit(f"⚠️ {target.first_name} اخطار گرفت. ({user_warns[key]}/3)")
+                
+    except ChatAdminRequiredError:
+        await event.edit("❌ ربات در این گروه ادمین نیست یا دسترسی کافی ندارد.")
     except Exception as e:
-        logger.error(f"Mod Error: {e}")
+        logger.error(f"Command Error: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۸. پنل کنترل از راه دور (فقط برای OWNER_ID)
-# ══════════════════════════════════════════════════════════════════════════════
-@client.on(events.NewMessage(outgoing=True))
-async def remote_control(event):
-    text = event.raw_text.strip()
-    if not text.startswith("#"): return
-    
-    try:
-        me = await client.get_me()
-        if event.chat_id != me.id: return # فقط در Saved Messages
-        
-        if text == "#away":
-            globals()['away_mode'] = True
-            await event.edit("🔴 حالت غیبت فعال شد. منشی دری جواب می‌دهد.")
-        elif text == "#back":
-            globals()['away_mode'] = False
-            await event.edit("🟢 حالت غیبت خاموش شد. شما خودتان جواب می‌دهید.")
-        elif text == "#status":
-            await event.edit(
-                f"👑 **وضعیت ربات**\n"
-                f"🕒 ساعت: فعال\n"
-                f"🤖 حالت غیبت: {'🟢 فعال' if away_mode else '🔴 غیرفعال'}\n"
-                f"📝 متن منشی: {secretary_custom_text[:20] + '...' if secretary_custom_text else 'هوش مصنوعی'}"
-            )
-        elif text.startswith("#set_secretary "):
-            globals()['secretary_custom_text'] = text.replace("#set_secretary ", "").strip()
-            await event.edit(f"✅ متن منشی تنظیم شد:\n{secretary_custom_text}")
-        elif text == "#clear_secretary":
-            globals()['secretary_custom_text'] = ""
-            await event.edit("✅ متن منشی پاک شد. منشی از هوش مصنوعی دری استفاده می‌کند.")
-        elif text.startswith("#schedule "):
-            # فرمت: #schedule 10m | @user | متن
-            parts = text.replace("#schedule ", "").split("|")
-            if len(parts) == 3:
-                delay_str, target, msg = parts[0].strip(), parts[1].strip(), parts[2].strip()
-                seconds = parse_time(delay_str)
-                if seconds:
-                    await event.edit(f"⏰ پیام برای {delay_str} دیگر به {target} زمان‌بندی شد.")
-                    async def delayed_send():
-                        await asyncio.sleep(seconds)
-                        await client.send_message(target, msg)
-                    asyncio.create_task(delayed_send())
-                else:
-                    await event.edit("❌ فرمت زمان اشتباه است (مثلاً 10m یا 2h).")
-    except Exception as e:
-        logger.error(f"Remote Error: {e}")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ۹. حلقه‌های پس‌زمینه (ساعت و تایپ)
+# ۹. حلقه‌های پس‌زمینه (ساعت و تایپ با مدیریت FloodWait)
 # ══════════════════════════════════════════════════════════════════════════════
 async def clock_loop():
     while True:
@@ -295,8 +324,13 @@ async def clock_loop():
             name = f"🕒 {now.strftime('%H:%M')} | {BASE_NAME}"
             await client(UpdateProfileRequest(first_name=name[:64]))
             await client(UpdateStatusRequest(offline=False))
+            logger.info(f"⏰ ساعت به‌روز شد: {name}")
+        except FloodWaitError as e:
+            logger.warning(f"⏳ محدودیت تلگرام: باید {e.seconds} ثانیه صبر کنیم.")
+            await asyncio.sleep(e.seconds)
+            continue
         except Exception as e: logger.error(f"Clock Error: {e}")
-        await asyncio.sleep(30)
+        await asyncio.sleep(60) # هر ۶۰ ثانیه برای جلوگیری از FloodWait
 
 async def typing_loop():
     peer = None
@@ -310,17 +344,22 @@ async def typing_loop():
         await asyncio.sleep(4)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۱۰. نقطه ورود
+# ۱۰. نقطه ورود (Auto-Reconnect)
 # ══════════════════════════════════════════════════════════════════════════════
 async def main():
     logger.info("🚀 اتصال به تلگرام...")
-    await client.connect()
-    if not await client.is_user_authorized():
-        logger.error("❌ سشن نامعتبر است.")
-        return
+    while True:
+        try:
+            await client.connect()
+            if await client.is_user_authorized(): break
+            else: return
+        except Exception as e:
+            logger.error(f"اتصال ناموفق: {e}. تلاش مجدد...")
+            await asyncio.sleep(10)
+            
     me = await client.get_me()
     logger.info(f"✅ متصل شد به: {me.first_name}")
-    logger.info("🔥 Omni-Communication OS v4.0 فعال شد.")
+    logger.info("🔥 Omni-Security OS v5.0 فعال شد.")
     
     asyncio.create_task(clock_loop())
     asyncio.create_task(typing_loop())
