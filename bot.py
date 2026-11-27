@@ -1,11 +1,8 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# 🌟 PROJECT OVERMAN - HIGH-AVAILABILITY EDITION v3.0 (24/7 Uptime)
+# 🌟 PROJECT OVERMAN - OMNI-COMMUNICATION EDITION v4.0
 # ══════════════════════════════════════════════════════════════════════════════
-# ⚡ هسته: ساعت زنده کابل + آنلاین همیشگی + تایپ مداوم
-# 🤖 هوش مصنوعی: منشی شخصی، مترجم، پاسخ خودکار
-# 🛡️ مدیریت: بن، سکوت، آزاد، اخطار هوشمند (3 اخطار = بن)، حذف
-# 📩 امنیت: صندوق امانات، ضد حذف پیام
-# 🎛️ کنترل: پنل مدیریت از راه دور در Saved Messages
+# قابلیت‌ها: ساعت کابل + آنلاین + تایپ + منشی دری هوشمند + حالت غیبت
+# تنظیم متن منشی + زمان‌بند + ری‌اکشن + پنل کنترل از راه دور
 # ══════════════════════════════════════════════════════════════════════════════
 
 import os
@@ -14,29 +11,24 @@ import asyncio
 import logging
 import time
 import re
-from datetime import datetime
+import random
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import requests
 from telethon import TelegramClient, events
 from telethon.sessions import StringSession
 from telethon.tl.functions.account import UpdateProfileRequest, UpdateStatusRequest
-from telethon.tl.functions.messages import SetTypingRequest
-from telethon.tl.types import SendMessageTypingAction, ChatBannedRights
+from telethon.tl.functions.messages import SetTypingRequest, SendReactionRequest
+from telethon.tl.types import SendMessageTypingAction, ChatBannedRights, ReactionEmoji
 from telethon.tl.functions.channels import EditBannedRequest
 from telethon.errors import FloodWaitError, ChatAdminRequiredError, RPCError
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۱. تنظیمات لاگ (برای رصد دقیق در گیت‌هاب)
+# ۱. تنظیمات اولیه
 # ══════════════════════════════════════════════════════════════════════════════
-logging.basicConfig(
-    format="%(asctime)s | %(levelname)-8s | %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger("OvermanHA")
+logging.basicConfig(format="%(asctime)s | %(levelname)-8s | %(message)s", level=logging.INFO)
+logger = logging.getLogger("OvermanOmni")
 
-# ══════════════════════════════════════════════════════════════════════════════
-# ۲. خواندن اطلاعات امن از Secrets
-# ══════════════════════════════════════════════════════════════════════════════
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 SESSION_STRING = os.getenv("SESSION_STRING", "")
@@ -44,26 +36,43 @@ BASE_NAME = os.getenv("BASE_NAME", "Master")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 if not API_ID or not API_HASH or not SESSION_STRING:
-    logger.critical("❌ متغیرهای محیطی یافت نشدند. لطفاً Secrets را بررسی کنید.")
-    sys.exit(1)
+    sys.exit("❌ متغیرهای محیطی یافت نشدند.")
 
 KABUL_TZ = ZoneInfo("Asia/Kabul")
-
-# ══════════════════════════════════════════════════════════════════════════════
-# ۳. متغیرهای سراسری و حافظه‌ها (State Management)
-# ══════════════════════════════════════════════════════════════════════════════
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
-recent_ai_replies = {}   # جلوگیری از اسپم منشی
-user_warns = {}          # سیستم اخطار: { (chat_id, user_id): count }
-message_cache = {}       # حافظه ضد حذف: { (chat_id, msg_id): (sender_id, text) }
-secretary_enabled = True # وضعیت منشی
-ai_history = {}          # حافظه کوتاه‌مدت AI
+# ══════════════════════════════════════════════════════════════════════════════
+# ۲. حافظه‌ها و تنظیمات منشی
+# ══════════════════════════════════════════════════════════════════════════════
+recent_ai_replies = {}
+user_warns = {}
+message_cache = {}
+ai_history = {}
+
+# تنظیمات منشی
+away_mode = False
+secretary_custom_text = ""  # اگر خالی باشد از هوش مصنوعی استفاده می‌کند
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۴. موتورهای هوشمند (AI & Translator)
+# ۳. توابع کمکی
 # ══════════════════════════════════════════════════════════════════════════════
-async def ai_reply(user_msg, sender_name, user_id):
+def parse_time(time_str):
+    """تبدیل 10m یا 2h به ثانیه"""
+    match = re.match(r"^(\d+)([mhd])$", time_str.lower())
+    if not match: return None
+    val, unit = int(match.group(1)), match.group(2)
+    if unit == 'm': return val * 60
+    if unit == 'h': return val * 3600
+    if unit == 'd': return val * 86400
+    return None
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ۴. موتور هوش مصنوعی دری (Dari AI)
+# ══════════════════════════════════════════════════════════════════════════════
+async def ai_reply_dari(user_msg, sender_name, user_id):
+    if secretary_custom_text:
+        return secretary_custom_text
+        
     url = "https://text.pollinations.ai/openai"
     
     if user_id not in ai_history: ai_history[user_id] = []
@@ -72,8 +81,9 @@ async def ai_reply(user_msg, sender_name, user_id):
     
     sys_prompt = (
         f"You are the personal AI secretary of {BASE_NAME}. "
-        f"The user '{sender_name}' is talking to you. "
-        f"Reply politely in the same language, saying {BASE_NAME} is currently busy. "
+        f"The user '{sender_name}' sent a message. "
+        f"Reply STRICTLY AND ONLY in Dari (Afghan Persian/Farsi). "
+        f"Tell them politely that {BASE_NAME} is currently away and will reply as soon as possible. "
         f"Keep it very short (max 2 sentences)."
     )
     
@@ -90,58 +100,56 @@ async def ai_reply(user_msg, sender_name, user_id):
             return reply
     except Exception as e:
         logger.error(f"AI Error: {e}")
-    return f"سلام {sender_name} عزیز، {BASE_NAME} الان در دسترس نیست. به زودی پاسخ می‌دهد."
+    return f"سلام {sender_name} جان، {BASE_NAME} الان دسترسی ندارد. به زودی جواب می‌دهد."
 
-async def translate_text(text):
+async def translate_text(text, target="fa"):
     try:
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q={requests.utils.quote(text)}"
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={target}&dt=t&q={requests.utils.quote(text)}"
         loop = asyncio.get_event_loop()
         res = await loop.run_in_executor(None, lambda: requests.get(url, timeout=10))
         if res.status_code == 200:
             return "".join([part[0] for part in res.json()[0]])
-    except Exception as e:
-        logger.error(f"Translate Error: {e}")
+    except: pass
     return "❌ خطا در ترجمه."
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۵. منشی هوشمند (AI Secretary) - پاسخ خودکار
+# ۵. منشی هوشمند دری + حالت غیبت + خواندن خودکار
 # ══════════════════════════════════════════════════════════════════════════════
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def secretary(event):
-    global secretary_enabled
-    if not secretary_enabled: return
-    
+    global away_mode
     try:
+        # خواندن خودکار پیام (سین زدن)
+        await client.send_read_acknowledge(event.chat_id)
+        
+        if not away_mode: return
+        
         sender = await event.get_sender()
         me = await client.get_me()
         if sender.bot or sender.id == me.id: return
         
         now = time.time()
-        if sender.id in recent_ai_replies and now - recent_ai_replies[sender.id] < 300: return # ۵ دقیقه کول‌داون
+        if sender.id in recent_ai_replies and now - recent_ai_replies[sender.id] < 300: return
         
-        reply = await ai_reply(event.raw_text or "[Media]", sender.first_name, sender.id)
+        reply = await ai_reply_dari(event.raw_text or "[Media]", sender.first_name, sender.id)
         await event.reply(reply)
         recent_ai_replies[sender.id] = now
-        logger.info(f"🤖 منشی پاسخ داد به {sender.first_name}")
+        logger.info(f"🤖 منشی دری پاسخ داد به {sender.first_name}")
     except Exception as e:
         logger.error(f"Secretary Error: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۶. صندوق امانات و ضد حذف (Vault & Anti-Delete)
+# ۶. صندوق امانات و ضد حذف
 # ══════════════════════════════════════════════════════════════════════════════
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def vault(event):
     try:
         sender = await event.get_sender()
-        me = await client.get_me()
-        if sender.id == me.id: return
-        
+        if sender.id == (await client.get_me()).id: return
         text = event.raw_text or "[رسانه]"
         ts = datetime.now(KABUL_TZ).strftime("%Y-%m-%d %H:%M")
-        msg = f"📩 **صندوق امانات**\n👤 از: {sender.first_name} (`{sender.id}`)\n⏰ {ts}\n\n{text}"
-        await client.send_message("me", msg)
-    except Exception as e:
-        logger.error(f"Vault Error: {e}")
+        await client.send_message("me", f"📩 **صندوق امانات**\n👤 از: {sender.first_name} (`{sender.id}`)\n⏰ {ts}\n\n{text}")
+    except: pass
 
 @client.on(events.NewMessage(incoming=True))
 async def cache_messages(event):
@@ -162,59 +170,75 @@ async def anti_delete(event):
     except: pass
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۷. مدیریت گروه پیشرفته (Moderator)
+# ۷. مدیریت گروه و ری‌اکشن خودکار
 # ══════════════════════════════════════════════════════════════════════════════
-@client.on(events.NewMessage(outgoing=True, pattern=r"^(بن|سکوت|آزاد|اخطار|حذف|پاکسازی)$"))
+@client.on(events.NewMessage(outgoing=True, pattern=r"^(بن|سکوت|آزاد|اخطار|حذف|پاکسازی|#react|#info|#pin|#unpin|#ترجمه)$"))
 async def moderator(event):
-    if not event.is_group: return
-    
     cmd = event.pattern_match.group(1)
-    
     try:
-        if cmd == "پاکسازی":
+        if cmd == "پاکسازی" and event.is_group:
             count = 0
             async for msg in client.iter_messages(event.chat_id, limit=50):
                 if msg.id == event.id: break
                 try: await msg.delete(); count += 1
                 except: pass
             return await event.edit(f"🧹 {count} پیام پاک شد.")
-        
+            
+        if cmd == "#ترجمه" and event.is_reply:
+            reply = await event.get_reply_message()
+            if reply.raw_text:
+                await event.edit("⏳ در حال ترجمه...")
+                await event.edit(f"🌐 **ترجمه:**\n{await translate_text(reply.raw_text)}")
+            return
+
         reply = await event.get_reply_message()
-        if not reply: return await event.edit("❌ روی پیام کاربر ریپلای کنید.")
-        
+        if not reply: return await event.edit("❌ روی یک پیام ریپلای کنید.")
+
+        if cmd == "#react":
+            await client(SendReactionRequest(peer=event.chat_id, msg_id=reply.id, reaction=[ReactionEmoji(emoticon="❤️")]))
+            await event.delete()
+            return
+        elif cmd == "#info":
+            target = await reply.get_sender()
+            await event.edit(f"👤 نام: {target.first_name}\n🆔 آیدی: `{target.id}`\n🔗 یوزرنیم: @{target.username or 'ندارد'}")
+            return
+        elif cmd == "#pin":
+            await client.pin_message(event.chat_id, reply.id)
+            await event.edit("📌 پیام پین شد.")
+            return
+        elif cmd == "#unpin":
+            await client.unpin_message(event.chat_id, reply.id)
+            await event.edit("📌 پیام آنپین شد.")
+            return
+
+        if not event.is_group: return
         target = await reply.get_sender()
-        chat_id = event.chat_id
-        target_id = target.id
         
         if cmd == "بن":
-            await client(EditBannedRequest(chat_id, target_id, ChatBannedRights(until_date=None, view_messages=True)))
+            await client(EditBannedRequest(event.chat_id, target.id, ChatBannedRights(until_date=None, view_messages=True)))
             await event.edit(f"⛔️ {target.first_name} بن شد.")
         elif cmd == "سکوت":
-            await client(EditBannedRequest(chat_id, target_id, ChatBannedRights(until_date=None, send_messages=True)))
+            await client(EditBannedRequest(event.chat_id, target.id, ChatBannedRights(until_date=None, send_messages=True)))
             await event.edit(f"🔇 {target.first_name} سکوت شد.")
         elif cmd == "آزاد":
-            await client(EditBannedRequest(chat_id, target_id, ChatBannedRights(until_date=None)))
+            await client(EditBannedRequest(event.chat_id, target.id, ChatBannedRights(until_date=None)))
             await event.edit(f"🔊 {target.first_name} آزاد شد.")
         elif cmd == "حذف":
-            await reply.delete()
-            await event.delete()
+            await reply.delete(); await event.delete()
         elif cmd == "اخطار":
-            key = (chat_id, target_id)
+            key = (event.chat_id, target.id)
             user_warns[key] = user_warns.get(key, 0) + 1
-            warns = user_warns[key]
-            if warns >= 3:
-                await client(EditBannedRequest(chat_id, target_id, ChatBannedRights(until_date=None, view_messages=True)))
+            if user_warns[key] >= 3:
+                await client(EditBannedRequest(event.chat_id, target.id, ChatBannedRights(until_date=None, view_messages=True)))
                 await event.edit(f"⛔️ {target.first_name} با ۳ اخطار بن شد.")
                 del user_warns[key]
             else:
-                await event.edit(f"⚠️ {target.first_name} اخطار گرفت. ({warns}/3)")
-    except ChatAdminRequiredError:
-        await event.edit("❌ ربات در این گروه ادمین نیست.")
+                await event.edit(f"⚠️ {target.first_name} اخطار گرفت. ({user_warns[key]}/3)")
     except Exception as e:
         logger.error(f"Mod Error: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۸. پنل کنترل از راه دور (Remote Control)
+# ۸. پنل کنترل از راه دور (فقط برای OWNER_ID)
 # ══════════════════════════════════════════════════════════════════════════════
 @client.on(events.NewMessage(outgoing=True))
 async def remote_control(event):
@@ -223,46 +247,46 @@ async def remote_control(event):
     
     try:
         me = await client.get_me()
-        if event.chat_id != me.id and text != "#ترجمه": return
+        if event.chat_id != me.id: return # فقط در Saved Messages
         
-        if text == "#status":
-            status = (
+        if text == "#away":
+            globals()['away_mode'] = True
+            await event.edit("🔴 حالت غیبت فعال شد. منشی دری جواب می‌دهد.")
+        elif text == "#back":
+            globals()['away_mode'] = False
+            await event.edit("🟢 حالت غیبت خاموش شد. شما خودتان جواب می‌دهید.")
+        elif text == "#status":
+            await event.edit(
                 f"👑 **وضعیت ربات**\n"
-                f"🟢 ساعت: فعال\n"
-                f"⌨️ تایپ: فعال\n"
-                f"🤖 منشی: {'روشن' if secretary_enabled else 'خاموش'}\n"
-                f"👥 پیام‌های کش‌شده: {len(message_cache)}"
+                f"🕒 ساعت: فعال\n"
+                f"🤖 حالت غیبت: {'🟢 فعال' if away_mode else '🔴 غیرفعال'}\n"
+                f"📝 متن منشی: {secretary_custom_text[:20] + '...' if secretary_custom_text else 'هوش مصنوعی'}"
             )
-            await event.edit(status)
-        elif text == "#secretary off":
-            globals()['secretary_enabled'] = False
-            await event.edit("🔴 منشی خاموش شد.")
-        elif text == "#secretary on":
-            globals()['secretary_enabled'] = True
-            await event.edit("🟢 منشی روشن شد.")
-        elif text == "#ترجمه" and event.is_reply:
-            reply = await event.get_reply_message()
-            if reply.raw_text:
-                await event.edit("⏳ در حال ترجمه...")
-                translated = await translate_text(reply.raw_text)
-                await event.edit(f"🌐 **ترجمه:**\n{translated}")
-        elif text.startswith("#pilot send|"):
-            parts = text.replace("#pilot ", "").split("|")
+        elif text.startswith("#set_secretary "):
+            globals()['secretary_custom_text'] = text.replace("#set_secretary ", "").strip()
+            await event.edit(f"✅ متن منشی تنظیم شد:\n{secretary_custom_text}")
+        elif text == "#clear_secretary":
+            globals()['secretary_custom_text'] = ""
+            await event.edit("✅ متن منشی پاک شد. منشی از هوش مصنوعی دری استفاده می‌کند.")
+        elif text.startswith("#schedule "):
+            # فرمت: #schedule 10m | @user | متن
+            parts = text.replace("#schedule ", "").split("|")
             if len(parts) == 3:
-                target, msg = parts[1].strip(), parts[2].strip()
-                await event.edit(f"✈️ خلبان فعال شد: ارسال به {target}")
-                
-                async def pilot_task():
-                    while True:
-                        try: await client.send_message(target, msg)
-                        except Exception as e: logger.error(f"Pilot: {e}")
-                        await asyncio.sleep(3600)
-                asyncio.create_task(pilot_task())
+                delay_str, target, msg = parts[0].strip(), parts[1].strip(), parts[2].strip()
+                seconds = parse_time(delay_str)
+                if seconds:
+                    await event.edit(f"⏰ پیام برای {delay_str} دیگر به {target} زمان‌بندی شد.")
+                    async def delayed_send():
+                        await asyncio.sleep(seconds)
+                        await client.send_message(target, msg)
+                    asyncio.create_task(delayed_send())
+                else:
+                    await event.edit("❌ فرمت زمان اشتباه است (مثلاً 10m یا 2h).")
     except Exception as e:
         logger.error(f"Remote Error: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۹. حلقه‌های پس‌زمینه (ساعت، آنلاین، تایپ) - ۲۴/۷ بدون توقف
+# ۹. حلقه‌های پس‌زمینه (ساعت و تایپ)
 # ══════════════════════════════════════════════════════════════════════════════
 async def clock_loop():
     while True:
@@ -271,12 +295,7 @@ async def clock_loop():
             name = f"🕒 {now.strftime('%H:%M')} | {BASE_NAME}"
             await client(UpdateProfileRequest(first_name=name[:64]))
             await client(UpdateStatusRequest(offline=False))
-        except FloodWaitError as e:
-            logger.warning(f"⏳ محدودیت ساعت: {e.seconds}s")
-            await asyncio.sleep(e.seconds)
-        except (RPCError, ConnectionError, Exception) as e:
-            logger.error(f"Clock Loop Error: {e}")
-            await asyncio.sleep(10)
+        except Exception as e: logger.error(f"Clock Error: {e}")
         await asyncio.sleep(30)
 
 async def typing_loop():
@@ -287,48 +306,29 @@ async def typing_loop():
                 dialogs = await client.get_dialogs(limit=1)
                 peer = dialogs[0].entity if dialogs else await client.get_me()
             await client(SetTypingRequest(peer=peer, action=SendMessageTypingAction()))
-        except (RPCError, ConnectionError, Exception) as e:
-            logger.debug(f"Typing Loop Error (retrying): {e}")
-            peer = None
+        except: peer = None
         await asyncio.sleep(4)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۱۰. نقطه ورود (Main Entry)
+# ۱۰. نقطه ورود
 # ══════════════════════════════════════════════════════════════════════════════
 async def main():
     logger.info("🚀 اتصال به تلگرام...")
-    
-    # حلقه اتصال مجدد خودکار (Auto-Reconnect)
-    while True:
-        try:
-            await client.connect()
-            if await client.is_user_authorized():
-                break
-            else:
-                logger.critical("❌ سشن نامعتبر است. لطفاً SESSION_STRING را آپدیت کنید.")
-                return
-        except Exception as e:
-            logger.error(f"❌ خطا در اتصال: {e}. تلاش مجدد در ۱۰ ثانیه...")
-            await asyncio.sleep(10)
-
+    await client.connect()
+    if not await client.is_user_authorized():
+        logger.error("❌ سشن نامعتبر است.")
+        return
     me = await client.get_me()
     logger.info(f"✅ متصل شد به: {me.first_name}")
-    logger.info("🔥 Ultimate HA v3.0 فعال شد. (ساعت، تایپ، آنلاین، منشی، امنیت)")
+    logger.info("🔥 Omni-Communication OS v4.0 فعال شد.")
     
-    # اجرای موازی همه حلقه‌ها
     asyncio.create_task(clock_loop())
     asyncio.create_task(typing_loop())
-    
     await client.run_until_disconnected()
 
 if __name__ == "__main__":
-    try:
-        client.loop.run_until_complete(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("👋 خاموش شد.")
-    except Exception as e:
-        logger.critical(f"💥 خطای بحرانی: {e}")
+    try: client.loop.run_until_complete(main())
+    except (KeyboardInterrupt, SystemExit): logger.info("👋 خاموش شد.")
     finally:
-        try:
-            client.loop.run_until_complete(client.disconnect())
+        try: client.loop.run_until_complete(client.disconnect())
         except: pass
