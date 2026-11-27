@@ -1,7 +1,11 @@
 # ══════════════════════════════════════════════════════════════════════════════
-# 🌟 PROJECT OVERMAN - OMNI-SECURITY & COMMUNICATION OS v5.0
+# 🌟 PROJECT OVERMAN - THE GRAND FINALE v6.0 (Enterprise Edition)
 # ══════════════════════════════════════════════════════════════════════════════
-# تمامی دستورات به زبان دری (فارسی افغانی) - ۲۴/۷ پایدار - هوش مصنوعی دری
+# ⚡ معماری: Zero-Crash, 24/7 Uptime, Anti-FloodWait, Auto-Reconnect
+# 🧠 هوش مصنوعی: منشی اختصاصی دری، مترجم همزمان
+# 🛡️ امنیت: صندوق امانات، ضد حذف پیام (Black Box)
+# 👑 مدیریت: دستورات کامل دری، قفل گروه، اخطار هوشمند (3 Warns = Ban)
+# 🎛️ کنترل: پنل مدیریت از راه دور در Saved Messages
 # ══════════════════════════════════════════════════════════════════════════════
 
 import os
@@ -23,10 +27,10 @@ from telethon.tl.functions.channels import EditBannedRequest
 from telethon.errors import FloodWaitError, ChatAdminRequiredError, RPCError
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۱. تنظیمات اولیه و لاگ
+# ۱. تنظیمات لاگ و متغیرهای محیطی
 # ══════════════════════════════════════════════════════════════════════════════
 logging.basicConfig(format="%(asctime)s | %(levelname)-8s | %(message)s", level=logging.INFO)
-logger = logging.getLogger("OvermanOmni")
+logger = logging.getLogger("OvermanFinal")
 
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
@@ -35,30 +39,31 @@ BASE_NAME = os.getenv("BASE_NAME", "Master")
 OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 
 if not API_ID or not API_HASH or not SESSION_STRING:
-    sys.exit("❌ متغیرهای محیطی یافت نشدند.")
+    logger.critical("❌ متغیرهای محیطی (API_ID, API_HASH, SESSION_STRING) یافت نشدند.")
+    sys.exit(1)
 
 KABUL_TZ = ZoneInfo("Asia/Kabul")
 client = TelegramClient(StringSession(SESSION_STRING), API_ID, API_HASH)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۲. حافظه‌ها و تنظیمات سراسری
+# ۲. حافظه‌های سراسری (State Management)
 # ══════════════════════════════════════════════════════════════════════════════
-recent_ai_replies = {}       # جلوگیری از اسپم منشی
+recent_ai_replies = {}       # جلوگیری از اسپم منشی (هر ۵ دقیقه)
 user_warns = {}              # سیستم اخطار: { (chat_id, user_id): count }
 message_cache = {}           # ضد حذف: { (chat_id, msg_id): (sender_id, text) }
-ai_history = {}              # حافظه هوش مصنوعی
+ai_history = {}              # حافظه کوتاه‌مدت هوش مصنوعی
+group_locks = {}             # قفل گروه‌ها: { chat_id: {"link": False, "badword": False} }
 
-# تنظیمات منشی و گروه
+# تنظیمات پویا
 away_mode = False
 secretary_custom_text = ""
-group_locks = {}             # قفل گروه‌ها: { chat_id: {"link": True, "badword": True} }
-bad_words = ["فحش", "بی‌ادب", "کلمه_ممنوعه"] # کلمات ممنوعه را اینجا اضافه کنید
+bad_words = ["فحش", "بی‌ادب", "کلمه_ممنوعه"] # لیست کلمات ممنوعه را اینجا تغییر دهید
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۳. توابع کمکی
+# ۳. توابع کمکی (Utils)
 # ══════════════════════════════════════════════════════════════════════════════
 def parse_time(time_str):
-    """تبدیل 10m یا 2h به ثانیه"""
+    """تبدیل 10m یا 2h به ثانیه برای زمان‌بند"""
     match = re.match(r"^(\d+)([mhd])$", time_str.lower())
     if not match: return None
     val, unit = int(match.group(1)), match.group(2)
@@ -68,22 +73,27 @@ def parse_time(time_str):
     return None
 
 async def translate_text(text, target="fa"):
+    """مترجم گوگل بدون نیاز به کلید"""
     try:
         url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={target}&dt=t&q={requests.utils.quote(text)}"
         loop = asyncio.get_event_loop()
         res = await loop.run_in_executor(None, lambda: requests.get(url, timeout=10))
         if res.status_code == 200:
             return "".join([part[0] for part in res.json()[0]])
-    except: pass
+    except Exception as e:
+        logger.error(f"Translate Error: {e}")
     return "❌ خطا در ترجمه."
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۴. هوش مصنوعی دری (Dari AI Secretary)
+# ۴. موتور هوش مصنوعی دری (Dari AI Secretary)
 # ══════════════════════════════════════════════════════════════════════════════
 async def ai_reply_dari(user_msg, sender_name, user_id):
+    # اگر متن دستی تنظیم شده باشد، از آن استفاده کن
     if secretary_custom_text: return secretary_custom_text
         
     url = "https://text.pollinations.ai/openai"
+    
+    # مدیریت حافظه کوتاه‌مدت
     if user_id not in ai_history: ai_history[user_id] = []
     ai_history[user_id].append({"role": "user", "content": user_msg})
     if len(ai_history[user_id]) > 4: ai_history[user_id].pop(0)
@@ -93,7 +103,7 @@ async def ai_reply_dari(user_msg, sender_name, user_id):
         f"The user '{sender_name}' sent a message. "
         f"Reply STRICTLY AND ONLY in Dari (Afghan Persian/Farsi). "
         f"Tell them politely that {BASE_NAME} is currently away and will reply as soon as possible. "
-        f"Keep it very short (max 2 sentences)."
+        f"Keep it very short (max 2 sentences) and polite."
     )
     
     payload = {"model": "openai", "messages": [{"role": "system", "content": sys_prompt}] + ai_history[user_id]}
@@ -104,17 +114,19 @@ async def ai_reply_dari(user_msg, sender_name, user_id):
             reply = res.json()["choices"][0]["message"]["content"]
             ai_history[user_id].append({"role": "assistant", "content": reply})
             return reply
-    except Exception as e: logger.error(f"AI Error: {e}")
+    except Exception as e: logger.error(f"AI Engine Error: {e}")
+    
     return f"سلام {sender_name} جان، {BASE_NAME} الان دسترسی ندارد. به زودی جواب می‌دهد."
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۵. منشی هوشمند دری + حالت غیبت + خواندن خودکار
+# ۵. منشی هوشمند دری + خواندن خودکار (Secretary)
 # ══════════════════════════════════════════════════════════════════════════════
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def secretary(event):
     global away_mode
     try:
-        await client.send_read_acknowledge(event.chat_id) # خواندن خودکار (سین زدن)
+        # خواندن خودکار (سین زدن)
+        await client.send_read_acknowledge(event.chat_id)
         if not away_mode: return
         
         sender = await event.get_sender()
@@ -130,7 +142,7 @@ async def secretary(event):
     except Exception as e: logger.error(f"Secretary Error: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۶. صندوق امانات و ضد حذف پیشرفته
+# ۶. صندوق امانات و ضد حذف (Vault & Black Box)
 # ══════════════════════════════════════════════════════════════════════════════
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private))
 async def vault(event):
@@ -161,10 +173,10 @@ async def anti_delete(event):
     except: pass
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۷. سیستم قفل هوشمند گروه (پاکسازی خودکار لینک و کلمات)
+# ۷. سیستم قفل هوشمند گروه (Auto-Moderation)
 # ══════════════════════════════════════════════════════════════════════════════
 @client.on(events.NewMessage(incoming=True, func=lambda e: e.is_group))
-async def group_locks(event):
+async def group_security(event):
     if not event.is_group: return
     chat_id = event.chat_id
     locks = group_locks.get(chat_id, {})
@@ -185,7 +197,7 @@ async def group_locks(event):
     except: pass
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۸. دستورات مدیریتی و روتور اصلی (تمام دری)
+# ۸. روتور دستورات (Command Router - تمام دری)
 # ══════════════════════════════════════════════════════════════════════════════
 @client.on(events.NewMessage(outgoing=True))
 async def command_router(event):
@@ -193,11 +205,11 @@ async def command_router(event):
     if not text: return
     
     try:
-        # ---------- دستورات پنل (فقط در Saved Messages) ----------
         me = await client.get_me()
+        
+        # ---------- پنل کنترل (فقط در Saved Messages) ----------
         if event.chat_id == me.id:
-            global away_mode, secretary_custom_text, group_locks
-            
+            global away_mode, secretary_custom_text
             if text == "منشی روشن":
                 away_mode = True
                 return await event.edit("🟢 منشی روشن شد. (حالت غیبت فعال است)")
@@ -213,7 +225,6 @@ async def command_router(event):
             elif text == "وضعیت":
                 return await event.edit(f"👑 **وضعیت ربات**\n\nمنشی: {'🟢 روشن' if away_mode else '🔴 خاموش'}\nمتن منشی: {secretary_custom_text[:20] or 'هوش مصنوعی'}\nپیام‌های کش‌شده: {len(message_cache)}")
             elif text.startswith("ارسال خودکار "):
-                # فرمت: ارسال خودکار 10m | @user | متن
                 parts = text.replace("ارسال خودکار ", "").split("|")
                 if len(parts) == 3:
                     delay_str, target, msg = parts[0].strip(), parts[1].strip(), parts[2].strip()
@@ -227,7 +238,7 @@ async def command_router(event):
                     else: await event.edit("❌ فرمت زمان اشتباه است (مثلاً 10m).")
                 return
 
-        # ---------- دستورات عمومی (در گروه‌ها و چت‌ها) ----------
+        # ---------- دستورات عمومی ----------
         reply = await event.get_reply_message()
         
         if text == "ترجمه" and reply:
@@ -235,14 +246,14 @@ async def command_router(event):
             translated = await translate_text(reply.raw_text or "")
             return await event.edit(f"🌐 **ترجمه:**\n{translated}")
             
-        if text == "ری‌اکشن" and reply:
-            await client(SendReactionRequest(peer=event.chat_id, msg_id=reply.id, reaction=[ReactionEmoji(emoticon="❤️")]))
-            return await event.delete()
-            
         if text == "مشخصات" and reply:
             target = await reply.get_sender()
             return await event.edit(f"👤 نام: {target.first_name}\n🆔 آیدی: `{target.id}`\n🔗 یوزرنیم: @{target.username or 'ندارد'}")
 
+        if text == "ری‌اکشن" and reply:
+            await client(SendReactionRequest(peer=event.chat_id, msg_id=reply.id, reaction=[ReactionEmoji(emoticon="❤️")]))
+            return await event.delete()
+            
         if text == "پین" and reply:
             await client.pin_message(event.chat_id, reply.id)
             return await event.edit("📌 پیام پین شد.")
@@ -255,7 +266,7 @@ async def command_router(event):
         if text == "سکه":
             return await event.edit(f"🪙 {'شیر' if random.choice([True, False]) else 'خط'}")
 
-        # ---------- دستورات گروهی (نیاز به ادمین و ریپلای) ----------
+        # ---------- دستورات گروهی ----------
         if not event.is_group: return
         
         # قفل‌ها
@@ -312,10 +323,10 @@ async def command_router(event):
     except ChatAdminRequiredError:
         await event.edit("❌ ربات در این گروه ادمین نیست یا دسترسی کافی ندارد.")
     except Exception as e:
-        logger.error(f"Command Error: {e}")
+        logger.error(f"Command Router Error: {e}")
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۹. حلقه‌های پس‌زمینه (ساعت و تایپ با مدیریت FloodWait)
+# ۹. حلقه‌های پس‌زمینه (ساعت، آنلاین، تایپ)
 # ══════════════════════════════════════════════════════════════════════════════
 async def clock_loop():
     while True:
@@ -344,7 +355,7 @@ async def typing_loop():
         await asyncio.sleep(4)
 
 # ══════════════════════════════════════════════════════════════════════════════
-# ۱۰. نقطه ورود (Auto-Reconnect)
+# ۱۰. نقطه ورود (Auto-Reconnect Engine)
 # ══════════════════════════════════════════════════════════════════════════════
 async def main():
     logger.info("🚀 اتصال به تلگرام...")
@@ -352,14 +363,16 @@ async def main():
         try:
             await client.connect()
             if await client.is_user_authorized(): break
-            else: return
+            else: 
+                logger.critical("❌ سشن نامعتبر است.")
+                return
         except Exception as e:
-            logger.error(f"اتصال ناموفق: {e}. تلاش مجدد...")
+            logger.error(f"اتصال ناموفق: {e}. تلاش مجدد در ۱۰ ثانیه...")
             await asyncio.sleep(10)
             
     me = await client.get_me()
     logger.info(f"✅ متصل شد به: {me.first_name}")
-    logger.info("🔥 Omni-Security OS v5.0 فعال شد.")
+    logger.info("🔥 The Grand Finale v6.0 فعال شد.")
     
     asyncio.create_task(clock_loop())
     asyncio.create_task(typing_loop())
